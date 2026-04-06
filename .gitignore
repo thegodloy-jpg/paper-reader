@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+logs/
+history.json
+history.json.bak
+activity_log.json
+keyword_profile.json
+*.egg-info/
+.env

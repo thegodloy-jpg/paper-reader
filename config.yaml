@@ -1,0 +1,184 @@
+# ===== 论文自动阅读系统 v2 配置（Codex / LiteLLM 多后端版本） =====
+
+# Obsidian Vault 路径（论文笔记将保存在此目录下的 papers/ 子文件夹）
+obsidian_vault: "D:/obsidian-vault"
+
+# arXiv 论文抓取配置
+arxiv:
+  keywords:
+    # --- 模型压缩 ---
+    - "model compression"
+    - "weight pruning LLM"
+    - "knowledge distillation language model"
+    - "low-rank approximation transformer"
+    - "model quantization INT4 INT8"
+    - "GPTQ AWQ quantization"
+    - "mixed-precision inference"
+    - "post-training quantization LLM"
+    - "FP8 inference"
+    # --- 推测解码 ---
+    - "speculative decoding"
+    - "draft model verification LLM"
+    - "tree-based speculative decoding"
+    # --- 注意力与KV缓存 ---
+    - "KV cache optimization"
+    - "prefix caching LLM"
+    - "cache eviction transformer"
+    - "flash attention"
+    - "paged attention"
+    - "linear attention transformer"
+    - "grouped query attention"
+    # --- 推理系统 ---
+    - "continuous batching LLM"
+    - "tensor parallelism inference"
+    - "pipeline parallelism inference"
+    - "expert parallelism MoE"
+    - "operator fusion transformer"
+    - "triton kernel LLM"
+    - "disaggregated serving LLM"
+    # --- 大模型推理系统 ---
+    - "LLM inference optimization"
+    - "LLM serving system"
+    - "large language model deployment"
+    - "inference engine throughput latency"
+    - "token generation speed"
+    - "efficient transformer inference"
+    # --- 近期热点 ---
+    - "early exit transformer inference"
+    - "layer skipping LLM"
+    - "adaptive inference depth"
+    - "model merging language model"
+    - "heterogeneous LLM serving"
+    # --- 自动发现（来自兴趣画像） ---
+    - "accelerating llm inference LLM"
+    - "vllm semantic router LLM"
+    - "cost-efficient llm serving LLM"
+    - "single forward pass LLM"
+    - "mobile devices LLM"
+  categories:
+    - "cs.CL"
+    - "cs.LG"
+    - "cs.AI"
+    - "cs.DC"
+  max_papers: 40
+  days_back: 30
+  skip_duplicates: true
+  prefer_with_code: false
+
+# 多源论文搜索配置（arXiv 之外的补充来源）
+sources:
+  semantic_scholar:
+    enabled: true
+    max_papers: 20         # 从 S2 获取的最大论文数
+    min_citations: 0       # 最低引用数过滤（0 = 不过滤）
+  paperswithcode:
+    enabled: false          # PWC API 已迁移到 HuggingFace，暂不可用
+    max_papers: 20
+  conferences:
+    enabled: true
+    venues:                  # 通过 Semantic Scholar 搜索以下顶会
+      - "ICLR"
+      - "ICML"
+      - "NeurIPS"
+      - "AAAI"
+      - "IJCAI"
+      - "ECCV"
+      - "MLSys"              # 系统方向顶会
+      - "OSDI"
+      - "SOSP"
+    year: 2026               # 搜索哪一年的会议论文（null = 不限）
+    max_papers: 30
+
+# AI 模型配置（多后端支持）
+ai:
+  # ---- 后端选择 ----
+  # provider 决定使用哪个后端调用模型
+  #   "codex"   - 通过本地 Codex CLI 调用（使用 ChatGPT 订阅的模型）
+  #   "litellm" - 通过 LiteLLM 调用（支持 100+ 提供商）
+  #   "raw"     - 直接调用 OpenAI 兼容 API（兼容 v1 原版行为）
+  provider: "litellm"
+
+  # ---- Codex 配置 ----
+  # 模型名称（ChatGPT 账号仅支持 gpt-5.4；gpt-4o/o3 等不可用）
+  # model: "gpt-5.4"
+  # Codex CLI 路径（留空则自动从 VS Code 扩展目录查找）
+  codex_cli_path: ""
+
+  # ---- 当前使用 GitHub Copilot 模型 ----
+  model: "github_copilot/gpt-4.1"
+
+  # ---- LiteLLM 配置 ----
+  # 使用 LiteLLM 时，model 格式为 "provider/model"：
+  #   "github_copilot/gpt-5-mini" - GitHub Copilot 免费模型（推荐）
+  #   "github_copilot/gpt-4o"     - GitHub Copilot
+  #   "github/gpt-4o"              - GitHub Models（免费）
+  #   "openai/gpt-4o"              - OpenAI Platform
+  #   "anthropic/claude-3-opus"    - Anthropic
+  #   "ollama/llama3"              - 本地 Ollama
+  # base_url 和 api_key 按需配置（github_copilot 无需额外配置）
+
+  # ---- Raw API 配置（兼容 v1） ----
+  # base_url: "https://models.inference.ai.azure.com"
+  # api_key: ""  # 留空则自动从 gh auth token 获取
+
+  base_url: ""
+  api_key: ""
+  language: "中文"
+
+  # ---- Fallback 链（主 provider 失败后依次尝试） ----
+  # 可用免费模型: gpt-4.1, gpt-4o, gpt-4o-mini, gpt-5-mini, gpt-4-o-preview
+  fallback:
+    - provider: "litellm"
+      model: "github_copilot/gpt-4o"
+    - provider: "litellm"
+      model: "github_copilot/gpt-5-mini"
+
+# 论文分类配置（用于自动分类和核心关键词匹配）
+# 注意：分类按顺序匹配，第一个命中即返回
+# 将「推测解码」放最前，因为其论文常包含 sparse/student 等词易被误分到剪枝/蒸馏
+categories:
+  - name: "推测解码"
+    icon: "🎯"
+    keywords: ["speculative decoding", "speculative sampling", "draft model", "draft-verify", "token tree", "tree attention", "medusa", "eagle", "lookahead decoding"]
+  - name: "量化"
+    icon: "🗜️"
+    keywords: ["quantization", "int4", "int8", "gptq", "awq", "mixed-precision", "low-bit", "4-bit", "2-bit", "1-bit", "weight-only quantization", "post-training quantization", "ptq", "gguf", "fp8", "fp4"]
+  - name: "剪枝"
+    icon: "✂️"
+    keywords: ["pruning", "weight pruning", "structured pruning", "unstructured pruning", "sparsity ratio", "sparse model", "network pruning", "magnitude pruning"]
+  - name: "蒸馏"
+    icon: "🧪"
+    keywords: ["knowledge distillation", "model distillation", "teacher-student", "distill", "student model training"]
+  - name: "压缩"
+    icon: "📦"
+    keywords: ["svd", "low-rank", "model compression", "decomposition", "weight sharing", "compact model"]
+  - name: "KV缓存"
+    icon: "💾"
+    keywords: ["kv cache", "cache optimization", "cache eviction", "prefix caching", "page table", "memory management LLM", "cache reuse", "cache sharing", "token cache"]
+  - name: "注意力优化"
+    icon: "⚡"
+    keywords: ["flash attention", "paged attention", "attention optimization", "linear attention", "sparse attention", "efficient attention", "multi-head attention", "grouped query attention", "multi-query attention", "gqa", "mqa", "attention kernel"]
+  - name: "推理系统"
+    icon: "🚀"
+    keywords: ["batching", "scheduling", "serving system", "throughput optimization", "vllm", "trt-llm", "tensorrt", "llm serving", "inference engine", "disaggregated serving", "request scheduling", "slo latency", "inference framework", "serving architecture"]
+  - name: "并行推理"
+    icon: "🔗"
+    keywords: ["parallel inference", "distributed inference", "pipeline parallel", "tensor parallel", "model parallelism", "disaggregated prefill", "prefill decode disaggregation", "sequence parallelism", "expert parallelism"]
+  - name: "算子优化"
+    icon: "🔧"
+    keywords: ["operator fusion", "kernel optimization", "cuda kernel", "gpu optimization", "triton kernel", "custom kernel", "fused kernel", "gemm optimization", "kernel generation"]
+  - name: "通用"
+    icon: "📄"
+    keywords: ["language model", "transformer", "llm", "foundation model"]
+  # 用户可自行添加新分类，格式：
+  # - name: "分类名"
+  #   icon: "emoji"
+  #   keywords: ["keyword1", "keyword2"]
+
+# 输出配置
+output:
+  folder: "papers"
+  tags:
+    - "论文"
+    - "LLM推理"
+    - "自动生成"
