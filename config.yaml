@@ -50,11 +50,11 @@ arxiv:
     - "model merging language model"
     - "heterogeneous LLM serving"
     # --- 自动发现（来自兴趣画像） ---
-    - "cost-efficient llm serving"
-    - "mobile LLM inference"
-    - "on-device LLM deployment"
-    - "accelerating llm inference"
-    - "lora-based llm inference"
+    - "kv-cache"
+    - "block"
+    - "mermaid flowchart"
+    - "decoding speculative"
+    - "gqa mla"
   categories:
     - "cs.CL"
     - "cs.LG"
