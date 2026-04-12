@@ -1048,6 +1048,39 @@ def cmd_stats(config: dict):
 # dashboard 模式：生成 Obsidian 统计面板笔记
 # =============================================================================
 
+
+def _sync_deep_analysis_status(vault_path: str, folder: str) -> int:
+    """同步深度分析状态：检测有深度分析段落但 frontmatter 未标记的论文并调用后处理"""
+    papers_dir = os.path.join(vault_path, folder)
+    if not os.path.exists(papers_dir):
+        return 0
+    count = 0
+    for root, dirs, files in os.walk(papers_dir):
+        for f in files:
+            if not f.endswith(".md") or f.startswith("_"):
+                continue
+            fp = os.path.join(root, f)
+            try:
+                with open(fp, "r", encoding="utf-8") as fh:
+                    content = fh.read()
+                if not content.startswith("---"):
+                    continue
+                end = content.find("---", 3)
+                if end == -1:
+                    continue
+                fm = yaml.safe_load(content[3:end])
+                if not fm or not fm.get("arxiv_id"):
+                    continue
+                has_section = "## 🔬 二阶段深度分析" in content
+                marked = fm.get("deep_analysis") is True
+                if has_section and not marked:
+                    post_process_deep_analysis(fp)
+                    count += 1
+            except Exception:
+                continue
+    return count
+
+
 def cmd_dashboard(config: dict):
     """生成 Obsidian 统计面板 _dashboard.md"""
     from collections import Counter
@@ -1064,6 +1097,12 @@ def cmd_dashboard(config: dict):
     if not papers:
         print("还没有任何论文笔记")
         return
+
+    # 同步深度分析状态：检测有深度分析段落但 frontmatter 未标记的论文
+    sync_count = _sync_deep_analysis_status(vault_path, folder)
+    if sync_count:
+        print(f"🔬 同步了 {sync_count} 篇论文的深度分析状态")
+        papers = _list_all_papers(vault_path, folder)  # 重新加载
 
     # 统计数据
     status_counter = Counter(p.get("status", "unread") for p in papers)
@@ -1109,7 +1148,7 @@ def cmd_dashboard(config: dict):
         "const counts = {};",
         "for (const p of pages) { const s = p.status || 'unread'; counts[s] = (counts[s] || 0) + 1; }",
         "const read = (counts.interested || 0) + (counts.reading || 0) + (counts.done || 0);",
-        "const deep = pages.where(p => p.has_deep).length;",
+        "const deep = pages.where(p => p.deep_analysis).length;",
         "const readPct = total ? Math.round(100 * read / total) : 0;",
         "const rejPct = total ? Math.round(100 * (counts.rejected || 0) / total) : 0;",
         "",
