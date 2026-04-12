@@ -102,8 +102,8 @@ def _build_query(keywords: list[str], categories: list[str]) -> str:
 
     使用 OR 连接关键词，AND 连接分类过滤
     """
-    # 关键词部分
-    kw_parts = [f'all:"{kw}"' for kw in keywords]
+    # 关键词部分 — 只搜标题和摘要，避免匹配评论/引用等噪音字段
+    kw_parts = [f'ti:"{kw}" OR abs:"{kw}"' for kw in keywords]
     kw_query = " OR ".join(kw_parts)
 
     # 分类部分

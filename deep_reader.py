@@ -408,3 +408,113 @@ def append_deep_note(filepath: str, deep_content: str):
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
+
+
+def post_process_deep_analysis(filepath: str):
+    """深度分析写入后的自动后处理：更新 frontmatter、标签、重构页面结构"""
+    AI_SECTIONS = {
+        '一句话总结', '原始摘要（Abstract）', '摘要翻译', '方法概览图',
+        '研究背景', '研究动机', '核心方法', '主要结果', '结论',
+        '与我的研究相关性', '代码与复现', '关键术语',
+    }
+    KEEP_SECTIONS = {'快速操作', '阅读笔记', '参考链接'}
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    if not content.startswith("---"):
+        return
+    end = content.find("---", 3)
+    if end == -1:
+        return
+
+    # --- 1. 更新 frontmatter ---
+    fm_str = content[3:end]
+    new_fm = fm_str
+    # deep_analysis 字段
+    if "deep_analysis:" in new_fm:
+        new_fm = re.sub(r"deep_analysis:\s*\S+", "deep_analysis: true", new_fm)
+    else:
+        new_fm = new_fm.rstrip("\n") + "\ndeep_analysis: true\n"
+    # 确保有深度分析标签
+    if "深度分析" not in new_fm:
+        new_fm = new_fm.rstrip("\n") + "\n  - 深度分析\n"
+    content = "---" + new_fm + content[end:]
+    # 重新定位 end
+    end = content.find("---", 3)
+
+    # --- 2. 更新正文中的深度分析可视化标签 ---
+    content = content.replace(
+        "> **深度分析**: ❌ 未分析",
+        "> **深度分析**: ✅ 已完成",
+    )
+    content = content.replace(
+        "> - **深度分析**: ❌ 未分析",
+        "> - **深度分析**: ✅ 已完成",
+    )
+
+    # --- 3. 重构页面：深度分析提前，AI 摘要折叠 ---
+    if "[!abstract]- 📋 AI 自动摘要" in content or "## 🔬 二阶段深度分析" not in content:
+        # 已重构过或无深度分析段落，跳过
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        return
+
+    body_start = end + 3
+    body = content[body_start:]
+
+    first_h2 = body.find("\n## ")
+    if first_h2 == -1:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        return
+
+    header_part = body[:first_h2]
+    rest = body[first_h2:]
+
+    section_pattern = re.compile(r"^## (.+)$", re.MULTILINE)
+    matches = list(section_pattern.finditer(rest))
+
+    sections = []
+    for i, m in enumerate(matches):
+        title = m.group(1).strip()
+        start = m.start()
+        end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(rest)
+        sections.append((title, rest[start:end_pos]))
+
+    deep_section = None
+    ai_sections = []
+    keep_sections = []
+
+    for title, text in sections:
+        if "🔬 二阶段深度分析" in title:
+            deep_section = text
+        elif title in AI_SECTIONS:
+            ai_sections.append(text)
+        elif title in KEEP_SECTIONS:
+            keep_sections.append(text)
+        else:
+            ai_sections.append(text)
+
+    if not deep_section:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        return
+
+    new_body = header_part + "\n"
+    new_body += "\n" + deep_section
+    if ai_sections:
+        new_body += "\n---\n\n"
+        callout_lines = ["> [!abstract]- 📋 AI 自动摘要（点击展开）", ">"]
+        for sec in ai_sections:
+            for line in sec.split("\n"):
+                callout_lines.append("> " + line if line.strip() else ">")
+        new_body += "\n".join(callout_lines) + "\n"
+    new_body += "\n---\n"
+    for sec in keep_sections:
+        new_body += "\n" + sec
+
+    content = content[:body_start] + new_body
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(content)

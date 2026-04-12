@@ -48,6 +48,15 @@ STOP_WORDS = {
     "token", "tokens", "attention", "number", "parameters", "parameter",
     "accuracy", "efficiency", "efficient", "framework", "architecture",
     "generation", "pre-trained", "pretrained", "fine-tuning", "fine-tuned",
+    # 通用硬件/系统词（会匹配大量无关论文）
+    "gpu", "gpus", "cpu", "cpus", "memory", "bandwidth", "latency",
+    "throughput", "hardware", "accelerator", "chip", "device", "devices",
+    "server", "servers", "cluster", "node", "nodes", "compute", "computing",
+    "system", "systems", "platform", "resource", "resources",
+    # 通用 ML 词
+    "llm", "llms", "transformer", "transformers", "inference", "serving",
+    "optimization", "optimized", "parallel", "distributed", "training",
+    "benchmark", "benchmarks", "evaluation", "implementation",
 }
 
 
@@ -175,6 +184,9 @@ def extract_interest_keywords(
                 sub = p.split("-")
                 if any(len(s) < 2 for s in sub if s):
                     return False
+        # 短语中所有词都是通用词则无效 (如 'gpu llm', 'cpu gpu')
+        if all(p in STOP_WORDS for p in parts):
+            return False
         return True
 
     # 先从高频短语中选

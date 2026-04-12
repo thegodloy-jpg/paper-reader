@@ -50,18 +50,18 @@ arxiv:
     - "model merging language model"
     - "heterogeneous LLM serving"
     # --- 自动发现（来自兴趣画像） ---
-    - "accelerating llm inference LLM"
-    - "vllm semantic router LLM"
-    - "cost-efficient llm serving LLM"
-    - "single forward pass LLM"
-    - "mobile devices LLM"
+    - "cost-efficient llm serving"
+    - "mobile LLM inference"
+    - "on-device LLM deployment"
+    - "accelerating llm inference"
+    - "lora-based llm inference"
   categories:
     - "cs.CL"
     - "cs.LG"
     - "cs.AI"
     - "cs.DC"
-  max_papers: 40
-  days_back: 30
+  max_papers: 80
+  days_back: 90
   skip_duplicates: true
   prefer_with_code: false
 

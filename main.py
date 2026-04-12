@@ -45,7 +45,7 @@ import yaml  # type: ignore[import-untyped]
 from .arxiv_fetcher import fetch_papers
 from .semantic_scholar_fetcher import fetch_papers_s2, fetch_conference_papers_s2
 from .paperswithcode_fetcher import fetch_papers_pwc
-from .summarizer import summarize_paper, generate_fallback_summary
+from .summarizer import summarize_paper, generate_fallback_summary, score_relevance
 from .obsidian_writer import write_paper_note, classify_paper
 from .filters import filter_duplicates, filter_by_code, mark_processed, sort_by_priority, sync_vault_to_history, log_activity
 from .interest_tracker import extract_interest_keywords
@@ -56,6 +56,7 @@ from .deep_reader import (
     ai_deep_analysis,
     find_interested_papers,
     append_deep_note,
+    post_process_deep_analysis,
 )
 from .post_check import (
     check_vault_papers,
@@ -228,6 +229,29 @@ def cmd_scan(config: dict, no_ai: bool = False, dry_run: bool = False, no_check:
         from .interest_tracker import build_feedback_profile
         feedback_profile = build_feedback_profile(vault_path, output_cfg.get("folder", "papers"))
     papers = sort_by_priority(papers, feedback_profile=feedback_profile)
+
+    # --- 步骤 1.8: AI 相关性预筛选 ---
+    relevance_cfg = config.get("relevance_filter", {})
+    relevance_enabled = relevance_cfg.get("enabled", True)
+    relevance_threshold = relevance_cfg.get("threshold", 4)
+    if relevance_enabled and not no_ai and len(papers) > 0:
+        print(f"\n🎯 AI 相关性预筛选 (阈值 ≥ {relevance_threshold})...")
+        scored_papers = []
+        for idx, p in enumerate(papers, 1):
+            score, reason = score_relevance(p, config, threshold=relevance_threshold)
+            tag = "✅" if score >= relevance_threshold else "❌"
+            print(f"  {tag} [{score}/10] {p.title[:55]}... — {reason}")
+            if score >= relevance_threshold:
+                scored_papers.append(p)
+            if idx < len(papers):
+                time.sleep(2)
+        filtered_out = len(papers) - len(scored_papers)
+        if filtered_out:
+            print(f"\n  🗑️ 过滤掉 {filtered_out} 篇低相关论文，保留 {len(scored_papers)} 篇")
+        papers = scored_papers
+        if not papers:
+            print("\n📭 所有论文相关性评分均低于阈值，没有需要处理的论文")
+            return
 
     print(f"\n📋 最终保留 {len(papers)} 篇论文:\n")
     for i, p in enumerate(papers, 1):
@@ -453,6 +477,7 @@ def cmd_deep(config: dict, paper_id: str = "", force: bool = False):
             ai_analysis=ai_result,
         )
         append_deep_note(paper["filepath"], deep_content)
+        post_process_deep_analysis(paper["filepath"])
         print(f"  📝 深度笔记已写入!")
         success += 1
 
@@ -1066,10 +1091,7 @@ def cmd_dashboard(config: dict):
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # 构建 Markdown
-    read_pct = 100*read_count//total if total else 0
-    reject_pct = 100*reject_count//total if total else 0
-
+    # 构建 Markdown（混合模式：Dataviewjs 实时 + Python 静态）
     lines = [
         "---",
         "title: 论文阅读仪表板",
@@ -1080,44 +1102,57 @@ def cmd_dashboard(config: dict):
         "",
         "# 📊 论文阅读仪表板",
         "",
-        f"> [!info] 自动更新于 {now_str}",
-        f"> 📬 总计 **{total}** 篇 · ⭐ 收藏 **{read_count}** ({read_pct}%) · "
-        f"🗑️ 淘汰 **{reject_count}** ({reject_pct}%) · 📬 待审 **{unread_count}** · "
-        f"🔬 深度 **{deep_count}**",
+        # ---- 实时状态总览（Dataviewjs） ----
+        "```dataviewjs",
+        f"const pages = dv.pages('\"" + folder + "\"').where(p => p.arxiv_id);",
+        "const total = pages.length;",
+        "const counts = {};",
+        "for (const p of pages) { const s = p.status || 'unread'; counts[s] = (counts[s] || 0) + 1; }",
+        "const read = (counts.interested || 0) + (counts.reading || 0) + (counts.done || 0);",
+        "const deep = pages.where(p => p.has_deep).length;",
+        "const readPct = total ? Math.round(100 * read / total) : 0;",
+        "const rejPct = total ? Math.round(100 * (counts.rejected || 0) / total) : 0;",
+        "",
+        "// 状态摘要",
+        "dv.paragraph(`> [!info] 📬 总计 **${total}** 篇 · ⭐ 收藏 **${read}** (${readPct}%) · 🗑️ 淘汰 **${counts.rejected || 0}** (${rejPct}%) · 📬 待审 **${counts.unread || 0}** · 🔬 深度 **${deep}**`);",
+        "",
+        "// 状态条形图（CSS）",
+        "const labels = {unread: '📬 待审阅', interested: '⭐ 感兴趣', reading: '📖 阅读中', done: '✅ 已完成', rejected: '🗑️ 已淘汰'};",
+        "const colors = {unread: '#3498db', interested: '#f39c12', reading: '#2ecc71', done: '#27ae60', rejected: '#95a5a6'};",
+        "const bar = dv.container.createEl('div');",
+        "bar.style.cssText = 'display:flex;height:28px;border-radius:6px;overflow:hidden;margin:8px 0 12px';",
+        "for (const s of ['unread','interested','reading','done','rejected']) {",
+        "  const c = counts[s] || 0;",
+        "  if (c === 0) continue;",
+        "  const seg = bar.createEl('div');",
+        "  const pct = (100 * c / total).toFixed(1);",
+        "  seg.style.cssText = `flex:${c};background:${colors[s]};display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;min-width:30px`;",
+        "  seg.textContent = `${labels[s].split(' ')[1]} ${c}`;",
+        "}",
+        "",
+        "// 快速导航",
+        "const navLabels = {unread: '待审阅', interested: '感兴趣', reading: '阅读中', done: '已完成', rejected: '已淘汰'};",
+        "const parts = ['unread','interested','reading','done','rejected'].map(s =>",
+        "  `[[_${s}|${navLabels[s]} (${counts[s] || 0})]]`",
+        ");",
+        "dv.paragraph('**快速导航:** ' + parts.join(' · '));",
+        "```",
         "",
         "---",
         "",
-        "## � 状态总览",
+        # ---- 实时分类分布（Dataviewjs） ----
+        "## 📂 分类分布",
         "",
-        "```mermaid",
-        "pie title 论文状态分布",
+        "```dataviewjs",
+        f"const pages = dv.pages('\"" + folder + "\"').where(p => p.arxiv_id);",
+        "const total = pages.length;",
+        "const cats = {};",
+        "for (const p of pages) { const c = p.category || '未分类'; cats[c] = (cats[c] || 0) + 1; }",
+        "const sorted = Object.entries(cats).sort((a, b) => b[1] - a[1]);",
+        "dv.table(['分类', '数量', '占比'], sorted.map(([cat, cnt]) => [cat, cnt, `${total ? Math.round(100*cnt/total) : 0}%`]));",
+        "```",
+        "",
     ]
-
-    STATUS_LABELS = {"unread": "待审阅", "interested": "感兴趣", "reading": "阅读中", "done": "已完成", "rejected": "已淘汰"}
-    for s in ["unread", "interested", "reading", "done", "rejected"]:
-        cnt = status_counter.get(s, 0)
-        if cnt:
-            lines.append(f'    "{STATUS_LABELS.get(s, s)}" : {cnt}')
-    lines.extend(["```", ""])
-
-    # 状态快速导航
-    nav_parts = []
-    for s in ["unread", "interested", "reading", "done", "rejected"]:
-        cnt = status_counter.get(s, 0)
-        label = STATUS_LABELS.get(s, s)
-        nav_parts.append(f"[[_{s}|{label} ({cnt})]]")
-    lines.append("**快速导航:** " + " · ".join(nav_parts))
-    lines.extend(["", "---", "", "## 📂 分类分布", ""])
-
-    # 分类表格
-    lines.extend([
-        "| 分类 | 数量 | 占比 |",
-        "|------|------|------|",
-    ])
-    for cat, cnt in cat_counter.most_common():
-        pct = f"{100*cnt//total}%" if total else "0%"
-        lines.append(f"| {cat} | {cnt} | {pct} |")
-    lines.append("")
 
     # 月度趋势
     if month_counter:
@@ -1128,28 +1163,48 @@ def cmd_dashboard(config: dict):
                        "    bar [" + ", ".join(str(month_counter[m]) for m in sorted(month_counter.keys())) + "]",
                        "```", ""])
 
-    # 兴趣偏好
-    if interest_cats:
-        lines.extend(["---", "", "## 🎯 兴趣偏好", ""])
-        lines.extend([
-            "```mermaid",
-            "pie title 收藏论文分类",
-        ])
-        for cat, cnt in interest_cats.most_common():
-            lines.append(f'    "{cat}" : {cnt}')
-        lines.extend(["```", ""])
+    # 兴趣偏好（Dataviewjs 实时）
+    lines.extend([
+        "---", "",
+        "## 🎯 兴趣偏好", "",
+        "```dataviewjs",
+        f"const pages = dv.pages('\"" + folder + "\"').where(p => p.arxiv_id && (p.status === 'interested' || p.status === 'reading' || p.status === 'done'));",
+        "if (pages.length === 0) { dv.paragraph('*暂无收藏论文*'); } else {",
+        "  const cats = {};",
+        "  for (const p of pages) { const c = p.category || '未分类'; cats[c] = (cats[c] || 0) + 1; }",
+        "  const sorted = Object.entries(cats).sort((a, b) => b[1] - a[1]);",
+        "  const maxCnt = sorted[0][1];",
+        "  const colors = ['#f39c12','#e67e22','#e74c3c','#9b59b6','#3498db','#2ecc71','#1abc9c','#34495e'];",
+        "  const wrap = dv.container.createEl('div');",
+        "  sorted.forEach(([cat, cnt], i) => {",
+        "    const row = wrap.createEl('div');",
+        "    row.style.cssText = 'display:flex;align-items:center;margin:4px 0;gap:8px';",
+        "    const label = row.createEl('span');",
+        "    label.style.cssText = 'min-width:80px;text-align:right;font-size:13px';",
+        "    label.textContent = cat;",
+        "    const barWrap = row.createEl('div');",
+        "    barWrap.style.cssText = 'flex:1;height:20px;background:var(--background-secondary);border-radius:4px;overflow:hidden';",
+        "    const bar = barWrap.createEl('div');",
+        "    bar.style.cssText = `height:100%;width:${Math.round(100*cnt/maxCnt)}%;background:${colors[i%colors.length]};border-radius:4px;display:flex;align-items:center;padding-left:6px;font-size:11px;color:#fff`;",
+        "    bar.textContent = cnt;",
+        "  });",
+        "}",
+        "```",
+        "",
+    ])
 
-    # 最近收藏
-    recent_interested = [p for p in papers if p.get("status") in ("interested", "reading")]
-    if recent_interested:
-        lines.extend(["---", "", "## ⭐ 最近收藏", ""])
-        for p in recent_interested[:10]:
-            icon = p.get("icon", "📄")
-            cat = p.get("category", "")
-            cat_str = f"[{cat}] " if cat else ""
-            fname = p.get("filename", p["title"])
-            lines.append(f"- {icon} {cat_str}[[{fname}]]")
-        lines.append("")
+    # 最近收藏（Dataviewjs 实时）
+    lines.extend([
+        "---", "",
+        "## ⭐ 最近收藏", "",
+        "```dataviewjs",
+        f"const pages = dv.pages('\"" + folder + "\"').where(p => p.arxiv_id && (p.status === 'interested' || p.status === 'reading'));",
+        "const sorted = pages.sort(p => p.status_updated || p.created, 'desc').slice(0, 10);",
+        "if (sorted.length === 0) { dv.paragraph('*暂无收藏论文*'); }",
+        "else { dv.list(sorted.map(p => `${p.icon || '📄'} [${p.category || ''}] [[${p.file.name}]]`)); }",
+        "```",
+        "",
+    ])
 
     # AI 推荐优先阅读（基于反馈画像打分）
     from .interest_tracker import build_feedback_profile, score_paper_relevance
@@ -1176,19 +1231,52 @@ def cmd_dashboard(config: dict):
                     lines.append(f"| {i} | [[{fname}]] | {cat} | {'★' * min(int(score * 5), 5)} {score:.2f} |")
                 lines.append("")
 
-    # 待审阅
-    recent_unread = [p for p in papers if p.get("status") == "unread"]
-    if recent_unread:
-        lines.extend(["---", "", "## 📬 待审阅", ""])
-        for p in recent_unread[:10]:
-            icon = p.get("icon", "📄")
-            cat = p.get("category", "")
-            cat_str = f"[{cat}] " if cat else ""
-            fname = p.get("filename", p["title"])
-            lines.append(f"- {icon} {cat_str}[[{fname}]]")
-        if len(recent_unread) > 10:
-            lines.append(f"- ... 还有 {len(recent_unread) - 10} 篇")
-        lines.append("")
+    # 待审阅（Dataviewjs 实时 + 状态切换按钮）
+    lines.extend([
+        "---", "",
+        "## 📬 待审阅", "",
+        "```dataviewjs",
+        f"const pages = dv.pages('\"" + folder + "\"').where(p => p.arxiv_id && p.status === 'unread');",
+        "const sorted = pages.sort(p => p.created, 'desc');",
+        "",
+        "async function setStatus(filePath, newStatus, label, row) {",
+        "  const file = app.vault.getAbstractFileByPath(filePath);",
+        "  if (!file) return;",
+        "  await app.fileManager.processFrontMatter(file, (fm) => {",
+        "    fm.status = newStatus;",
+        "    fm.status_updated = new Date().toISOString().slice(0, 16).replace('T', ' ');",
+        "  });",
+        "  row.style.transition = 'opacity 0.3s';",
+        "  row.style.opacity = '0.2';",
+        "  new Notice(`✅ 已标记为「${label}」`);",
+        "}",
+        "",
+        "if (sorted.length === 0) { dv.paragraph('*所有论文都已审阅*'); }",
+        "else {",
+        "  dv.paragraph(`共 ${sorted.length} 篇待审阅 → [[_unread|查看全部]]`);",
+        "  const show = sorted.slice(0, 15);",
+        "  for (const p of show) {",
+        "    const row = dv.container.createEl('div');",
+        "    row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 0;';",
+        "    const link = row.createEl('a', {cls: 'internal-link', href: p.file.path});",
+        "    link.textContent = `${p.icon || '📄'} [${p.category || ''}] ${p.file.name}`;",
+        "    link.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1';",
+        "    const btnG = row.createEl('span');",
+        "    btnG.style.cssText = 'display:flex;gap:4px;flex-shrink:0';",
+        "    for (const [icon, target, label] of [['⭐','interested','感兴趣'],['🗑️','rejected','淘汰']]) {",
+        "      const btn = btnG.createEl('button', {text: icon});",
+        "      btn.title = label;",
+        "      btn.style.cssText = 'font-size:13px;cursor:pointer;padding:1px 6px;border-radius:4px;opacity:0.7';",
+        "      btn.onmouseenter = () => btn.style.opacity = '1';",
+        "      btn.onmouseleave = () => btn.style.opacity = '0.7';",
+        "      btn.onclick = () => setStatus(p.file.path, target, label, row);",
+        "    }",
+        "  }",
+        "  if (sorted.length > 15) dv.paragraph(`*... 还有 ${sorted.length - 15} 篇*`);",
+        "}",
+        "```",
+        "",
+    ])
 
     # 正反关键词词云（每次 dashboard 时重新构建，保证数据新鲜）
     from .interest_tracker import build_keyword_profile as _build_kw
@@ -1443,7 +1531,22 @@ def cmd_dashboard(config: dict):
 
     generated_status_pages = []
     for status_key, meta in STATUS_META.items():
-        # 使用 Dataview 动态查询，实时反映论文状态变化
+        # 每个状态可切换的目标状态
+        STATUS_ACTIONS = {
+            "unread":     [("⭐", "interested", "感兴趣"), ("🗑️", "rejected", "淘汰")],
+            "interested": [("📖", "reading", "阅读中"), ("🗑️", "rejected", "淘汰")],
+            "reading":    [("✅", "done", "已完成"), ("⭐", "interested", "回到收藏")],
+            "done":       [("📖", "reading", "重新阅读")],
+            "rejected":   [("⭐", "interested", "恢复收藏")],
+        }
+        actions = STATUS_ACTIONS.get(status_key, [])
+
+        # 构建 Dataviewjs 状态切换函数
+        actions_js = "const actions = [" + ",".join(
+            f"['{icon}','{target}','{label}']" for icon, target, label in actions
+        ) + "];"
+
+        # 使用 Dataview 动态查询 + 内联状态按钮
         page_lines = [
             "---",
             f"title: {meta['label']}论文索引",
@@ -1452,7 +1555,7 @@ def cmd_dashboard(config: dict):
             "",
             f"# {meta['icon']} {meta['label']}论文",
             "",
-            f"> {meta['desc']} · 内容由 Dataview 实时查询，无需手动刷新",
+            f"> {meta['desc']} · 内容由 Dataview 实时查询，点击按钮可直接切换状态",
             "",
             f"← [[_dashboard|返回仪表板]]",
             "",
@@ -1461,6 +1564,20 @@ def cmd_dashboard(config: dict):
             "const pages = dv.pages('\"" + folder + "\"')",
             f"  .where(p => p.status === status && p.arxiv_id);",
             "",
+            actions_js,
+            "",
+            "async function setStatus(filePath, newStatus, label, row) {",
+            "  const file = app.vault.getAbstractFileByPath(filePath);",
+            "  if (!file) return;",
+            "  await app.fileManager.processFrontMatter(file, (fm) => {",
+            "    fm.status = newStatus;",
+            "    fm.status_updated = new Date().toISOString().slice(0, 16).replace('T', ' ');",
+            "  });",
+            "  row.style.transition = 'opacity 0.3s';",
+            "  row.style.opacity = '0.2';",
+            "  new Notice(`✅ 已标记为「${label}」`);",
+            "}",
+            "",
             "if (pages.length === 0) {",
             "  dv.paragraph('*暂无论文*');",
             "} else {",
@@ -1468,10 +1585,22 @@ def cmd_dashboard(config: dict):
             "  const groups = pages.groupBy(p => p.category || '未分类');",
             "  for (const group of groups.sort(g => g.key, 'asc')) {",
             "    dv.header(2, `${group.key} (${group.rows.length} 篇)`);",
-            "    dv.list(group.rows.map(p => {",
-            "      const icon = p.icon || '📄';",
-            "      return `${icon} [[${p.file.name}]]`;",
-            "    }));",
+            "    for (const p of group.rows) {",
+            "      const row = dv.container.createEl('div');",
+            "      row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 0;';",
+            "      const link = row.createEl('a', {cls: 'internal-link', href: p.file.path});",
+            "      link.textContent = `${p.icon || '📄'} ${p.file.name}`;",
+            "      const btnG = row.createEl('span');",
+            "      btnG.style.cssText = 'margin-left:auto;display:flex;gap:4px;flex-shrink:0';",
+            "      for (const [icon, target, label] of actions) {",
+            "        const btn = btnG.createEl('button', {text: icon});",
+            "        btn.title = label;",
+            "        btn.style.cssText = 'font-size:13px;cursor:pointer;padding:1px 6px;border-radius:4px;opacity:0.7';",
+            "        btn.onmouseenter = () => btn.style.opacity = '1';",
+            "        btn.onmouseleave = () => btn.style.opacity = '0.7';",
+            "        btn.onclick = () => setStatus(p.file.path, target, label, row);",
+            "      }",
+            "    }",
             "  }",
             "}",
             "```",
@@ -1571,9 +1700,9 @@ def cmd_update_keywords(config: dict):
             phrase = item["phrase"]
             if any(phrase in ex or ex in phrase for ex in manual_kw_lower):
                 continue
-            search_term = f"{phrase} LLM"
-            if search_term.lower() not in manual_kw_lower:
-                synced_keywords.append(search_term)
+            # 直接使用短语，不再盲目追加 " LLM" 后缀
+            if phrase.lower() not in manual_kw_lower:
+                synced_keywords.append(phrase)
             if len(synced_keywords) >= 5:
                 break
 

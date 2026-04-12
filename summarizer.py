@@ -116,6 +116,49 @@ def summarize_paper(
     )
 
 
+RELEVANCE_PROMPT = """你是一位专注于大模型（LLM）推理优化与加速的研究员。
+请判断以下论文与"LLM推理优化加速"的相关性。
+
+评分标准（0-10）：
+- 9-10: 核心相关，直接涉及 LLM 推理加速技术（量化/剪枝/推测解码/KV缓存/serving系统等）
+- 7-8: 密切相关，涉及模型压缩、高效推理、attention优化等
+- 5-6: 间接相关，涉及 LLM 训练优化、模型架构改进等
+- 3-4: 弱相关，涉及通用深度学习或 NLP，但非推理优化
+- 0-2: 无关，其他领域如 CV、机器人、安全、纯理论等
+
+请只输出一个 JSON 对象，不要输出其他内容：
+{"score": <整数0-10>, "reason": "<一句话理由>"}"""
+
+
+def score_relevance(
+    paper: Paper,
+    config: dict,
+    threshold: int = 4,
+) -> tuple[int, str]:
+    """轻量 AI 相关性评分，返回 (score, reason)"""
+    user_prompt = f"标题: {paper.title}\n摘要: {paper.abstract[:500]}"
+    messages = [
+        {"role": "system", "content": RELEVANCE_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+    try:
+        resp = chat_completion_with_fallback(
+            messages=messages,
+            config=config,
+            temperature=0.0,
+            max_tokens=120,
+        )
+        if resp:
+            import json, re
+            m = re.search(r'\{[^}]+\}', resp)
+            if m:
+                data = json.loads(m.group())
+                return int(data.get("score", 5)), data.get("reason", "")
+    except Exception:
+        pass
+    return 5, "评分失败，默认保留"
+
+
 def generate_fallback_summary(paper: Paper) -> str:
     """当 AI 不可用时，生成基于原始摘要的结构化笔记"""
     return f"""## 一句话总结

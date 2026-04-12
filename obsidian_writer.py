@@ -11,16 +11,17 @@ from .arxiv_fetcher import Paper
 # 默认分类配置（当 config.yaml 中未配置 categories 时使用）
 DEFAULT_CATEGORIES = [
     # 注意：按顺序匹配，推测解码放最前（其论文常含 sparse/student 等词易误分到剪枝/蒸馏）
-    {"name": "推测解码", "icon": "🎯", "keywords": ["speculative decoding", "speculative sampling", "draft model", "draft-verify", "token tree", "tree attention", "medusa", "eagle", "lookahead decoding"]},
-    {"name": "量化", "icon": "🗜️", "keywords": ["quantization", "int4", "int8", "gptq", "awq", "mixed-precision", "low-bit", "4-bit", "2-bit", "1-bit", "weight-only quantization", "post-training quantization", "ptq", "gguf", "fp8", "fp4"]},
-    {"name": "剪枝", "icon": "✂️", "keywords": ["pruning", "weight pruning", "structured pruning", "unstructured pruning", "sparsity ratio", "sparse model", "network pruning", "magnitude pruning"]},
-    {"name": "蒸馏", "icon": "🧪", "keywords": ["knowledge distillation", "model distillation", "teacher-student", "distill", "student model training"]},
-    {"name": "压缩", "icon": "📦", "keywords": ["svd", "low-rank", "model compression", "decomposition", "weight sharing", "compact model"]},
-    {"name": "KV缓存", "icon": "💾", "keywords": ["kv cache", "cache optimization", "cache eviction", "prefix caching", "page table", "memory management LLM", "cache reuse", "cache sharing", "token cache"]},
-    {"name": "注意力优化", "icon": "⚡", "keywords": ["flash attention", "paged attention", "attention optimization", "linear attention", "sparse attention", "efficient attention", "multi-head attention", "grouped query attention", "multi-query attention", "gqa", "mqa", "attention kernel"]},
-    {"name": "推理系统", "icon": "🚀", "keywords": ["batching", "scheduling", "serving system", "throughput optimization", "vllm", "trt-llm", "tensorrt", "llm serving", "inference engine", "disaggregated serving", "request scheduling", "slo latency", "inference framework", "serving architecture"]},
-    {"name": "并行推理", "icon": "🔗", "keywords": ["parallel inference", "distributed inference", "pipeline parallel", "tensor parallel", "model parallelism", "disaggregated prefill", "prefill decode disaggregation", "sequence parallelism", "expert parallelism"]},
-    {"name": "算子优化", "icon": "🔧", "keywords": ["operator fusion", "kernel optimization", "cuda kernel", "gpu optimization", "triton kernel", "custom kernel", "fused kernel", "gemm optimization", "kernel generation"]},
+    {"name": "推测解码", "icon": "🎯", "keywords": ["speculative decoding", "speculative sampling", "draft model", "draft-verify", "token tree", "tree attention", "medusa", "eagle", "lookahead decoding", "self-speculative", "multi-token prediction", "parallel decoding"]},
+    {"name": "量化", "icon": "🗜️", "keywords": ["quantization", "int4", "int8", "gptq", "awq", "mixed-precision", "low-bit", "4-bit", "2-bit", "1-bit", "weight-only quantization", "post-training quantization", "ptq", "gguf", "fp8", "fp4", "quantize", "dequantize"]},
+    {"name": "剪枝", "icon": "✂️", "keywords": ["pruning", "weight pruning", "structured pruning", "unstructured pruning", "sparsity ratio", "sparse model", "network pruning", "magnitude pruning", "lottery ticket", "sparse-lowrank"]},
+    {"name": "蒸馏", "icon": "🧪", "keywords": ["knowledge distillation", "model distillation", "teacher-student", "distill", "student model training", "on-policy distillation", "symbolic distillation"]},
+    {"name": "压缩", "icon": "📦", "keywords": ["svd", "low-rank", "model compression", "decomposition", "weight sharing", "compact model", "lossless compression", "low-rank approximation"]},
+    {"name": "KV缓存", "icon": "💾", "keywords": ["kv cache", "cache optimization", "cache eviction", "prefix caching", "page table", "memory management llm", "cache reuse", "cache sharing", "token cache", "cache offloading", "kv offload"]},
+    {"name": "注意力优化", "icon": "⚡", "keywords": ["flash attention", "paged attention", "attention optimization", "linear attention", "sparse attention", "efficient attention", "multi-head attention", "grouped query attention", "multi-query attention", "gqa", "mqa", "attention kernel", "long-context", "context window extension"]},
+    {"name": "推理系统", "icon": "🚀", "keywords": ["batching", "scheduling", "serving system", "throughput optimization", "vllm", "trt-llm", "tensorrt", "llm serving", "inference engine", "disaggregated serving", "request scheduling", "slo latency", "inference framework", "serving architecture", "continuous batching", "llm inference", "inference optimization"]},
+    {"name": "并行推理", "icon": "🔗", "keywords": ["parallel inference", "distributed inference", "pipeline parallel", "tensor parallel", "model parallelism", "disaggregated prefill", "prefill decode disaggregation", "sequence parallelism", "expert parallelism", "moe inference", "mixture-of-experts inference"]},
+    {"name": "算子优化", "icon": "🔧", "keywords": ["operator fusion", "kernel optimization", "cuda kernel", "gpu optimization", "triton kernel", "custom kernel", "fused kernel", "gemm optimization", "kernel generation", "heterogeneous co-design"]},
+    {"name": "端侧推理", "icon": "📱", "keywords": ["on-device", "mobile inference", "edge inference", "edge deployment", "mobile llm", "on-device llm", "energy-efficient inference", "dvfs", "npu inference", "mobile deployment"]},
 ]
 
 
@@ -156,6 +157,7 @@ conference: "{conference}"
 status: unread
 status_updated: ""
 created: {now}
+deep_analysis: false
 tags:
 {tag_str}
 ---
@@ -180,6 +182,7 @@ tags:
 > **arXiv**: [{paper.arxiv_id}]({paper.abs_url})
 > **PDF**: [在线]({paper.pdf_url}) | {pdf_link}
 > **分类**: {', '.join(paper.categories[:3])}{conf_line}
+> **深度分析**: ❌ 未分析
 
 ---
 
