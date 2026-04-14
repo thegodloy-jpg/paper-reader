@@ -81,16 +81,22 @@ def search_code_repo(title: str, arxiv_id: str, abstract: str = "") -> list[dict
             results.append({"url": url, "source": "论文摘要", "stars": -1, "description": ""})
             seen_urls.add(url)
 
-    # 2. Papers With Code API
-    base_id = re.sub(r'v\d+$', '', arxiv_id)
-    pwc_repos = _search_paperswithcode(base_id)
-    for repo in pwc_repos:
+    # 2. 从 arXiv HTML 页面提取代码链接
+    arxiv_repos = _search_arxiv_html(arxiv_id)
+    for repo in arxiv_repos:
         if repo["url"] not in seen_urls:
             results.append(repo)
             seen_urls.add(repo["url"])
 
-    # 3. GitHub 代码搜索
-    gh_repos = _search_github(title)
+    # 3. Semantic Scholar API
+    s2_repos = _search_semantic_scholar(arxiv_id)
+    for repo in s2_repos:
+        if repo["url"] not in seen_urls:
+            results.append(repo)
+            seen_urls.add(repo["url"])
+
+    # 4. GitHub 多策略搜索（带验证）
+    gh_repos = _search_github(title, arxiv_id=arxiv_id)
     for repo in gh_repos:
         if repo["url"] not in seen_urls:
             results.append(repo)
@@ -99,43 +105,149 @@ def search_code_repo(title: str, arxiv_id: str, abstract: str = "") -> list[dict
     return results
 
 
-def _search_paperswithcode(arxiv_id: str) -> list[dict]:
-    """从 Papers With Code 搜索代码仓库"""
+def _search_arxiv_html(arxiv_id: str) -> list[dict]:
+    """从 arXiv 页面提取代码仓库链接"""
     results = []
+    base_id = re.sub(r'v\d+$', '', arxiv_id)
+    url = f"https://arxiv.org/abs/{base_id}"
     try:
-        url = f"https://paperswithcode.com/api/v1/papers/?arxiv_id={arxiv_id}"
-        data = _api_get(url, timeout=10)
-        if not data or not data.get("results"):
-            return results
-        pwc_id = data["results"][0].get("id")
-        if not pwc_id:
-            return results
-        repo_url = f"https://paperswithcode.com/api/v1/papers/{pwc_id}/repositories/"
-        repos = _api_get(repo_url, timeout=10)
-        if repos and repos.get("results"):
-            for r in repos["results"][:5]:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "paper-reader-bot/1.0",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+        # arXiv 页面中 GitHub 链接
+        gh_urls = re.findall(r'href="(https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)"', html)
+        for gh_url in gh_urls:
+            # 排除 arXiv 自身的 GitHub
+            if "arxiv" not in gh_url.lower():
                 results.append({
-                    "url": r.get("url", ""),
-                    "source": "Papers With Code",
-                    "stars": r.get("stars", 0),
-                    "description": r.get("description", ""),
+                    "url": gh_url,
+                    "source": "arXiv 页面",
+                    "stars": -1,
+                    "description": "",
                 })
     except Exception:
         pass
     return results
 
 
-def _search_github(title: str) -> list[dict]:
-    """通过 GitHub Search API 搜索相关仓库"""
+def _search_semantic_scholar(arxiv_id: str) -> list[dict]:
+    """从 Semantic Scholar API 获取代码仓库链接"""
     results = []
+    base_id = re.sub(r'v\d+$', '', arxiv_id)
+    url = f"https://api.semanticscholar.org/graph/v1/paper/ARXIV:{base_id}?fields=externalIds,openAccessPdf"
+    try:
+        data = _api_get(url, timeout=10)
+        if not data:
+            return results
+        # 检查 openAccessPdf 中是否有 GitHub 链接
+        pdf_info = data.get("openAccessPdf") or {}
+        pdf_url = pdf_info.get("url", "")
+        if "github.com" in pdf_url:
+            results.append({
+                "url": pdf_url,
+                "source": "Semantic Scholar",
+                "stars": -1,
+                "description": "",
+            })
+    except Exception:
+        pass
+    return results
+
+
+def _search_github(title: str, arxiv_id: str = "") -> list[dict]:
+    """通过 GitHub Search API 多策略搜索相关仓库"""
     token = _get_gh_token()
-    clean_title = re.sub(r'\b(a|an|the|of|for|and|in|on|to|with|via|by)\b', '', title, flags=re.IGNORECASE)
-    clean_title = ' '.join(clean_title.split()[:6])
-    query = urllib.parse.quote(clean_title)
-    url = f"https://api.github.com/search/repositories?q={query}&sort=stars&per_page=5"
-    data = _github_api_get(url, token=token)
-    if data and data.get("items"):
+    base_id = re.sub(r'v\d+$', '', arxiv_id) if arxiv_id else ""
+    seen_urls: set[str] = set()
+    candidates: list[tuple[dict, str]] = []  # (item, query_type)
+
+    # 提取标题中的缩写词/专有名词（EAGLE, AWQ, vLLM, Medusa, PagedAttention 等）
+    raw_acronyms = []
+    for w in title.split():
+        w = w.strip(":,;()[]")
+        if not w or len(w) < 2:
+            continue
+        if w.isupper() and len(w) >= 2:
+            raw_acronyms.append(w)  # 全大写: EAGLE, AWQ, LLM
+        elif re.match(r'^[a-z]+[A-Z]', w):
+            raw_acronyms.append(w)  # 驼峰: vLLM
+    acronyms = raw_acronyms
+
+    # 标题中冒号前的第一个词通常是论文的核心名称（如 "Medusa:", "EAGLE:"）
+    colon_match = re.match(r'^(\w+)\s*:', title)
+    paper_name = colon_match.group(1) if colon_match else ""
+    if paper_name and paper_name not in acronyms:
+        acronyms.insert(0, paper_name)
+
+    # 构建多个搜索查询（按优先级，标记查询类型）
+    queries: list[tuple[str, str]] = []  # (query, type)
+    # 策略1: 用 arxiv_id 搜索（最高精度）
+    if base_id:
+        queries.append((base_id, "arxiv_id"))
+    # 策略2: 缩写词 + 领域关键词（如 "EAGLE speculative decoding"）
+    domain_words = [w.lower() for w in title.split() if len(w) > 4 and not w.isupper()]
+    domain_hint = ' '.join(domain_words[:2]) if domain_words else ""
+    for acr in acronyms[:2]:
+        if domain_hint:
+            queries.append((f"{acr} {domain_hint}", "acronym"))
+        queries.append((f"{acr} in:name", "acronym_name"))
+    # 策略3: 标题关键词
+    stop_words = {'a', 'an', 'the', 'of', 'for', 'and', 'in', 'on', 'to', 'with', 'via', 'by', 'is', 'are', 'its'}
+    title_kws = [w for w in title.split() if w.lower() not in stop_words and len(w) > 2]
+    if len(title_kws) > 3:
+        queries.append((' '.join(title_kws[:5]), "keywords"))
+
+    for q, qtype in queries:
+        encoded = urllib.parse.quote(q)
+        url = f"https://api.github.com/search/repositories?q={encoded}&sort=stars&per_page=5"
+        data = _github_api_get(url, token=token)
+        if not data or not data.get("items"):
+            continue
         for item in data["items"][:5]:
+            html_url = item["html_url"]
+            if html_url in seen_urls:
+                continue
+            seen_urls.add(html_url)
+            candidates.append((item, qtype))
+
+    # ML 领域关键词集（用于验证仓库是否与 ML 论文相关）
+    ml_indicators = {
+        "llm", "transformer", "attention", "inference", "decoding", "model",
+        "language", "speculative", "sampling", "quantization", "pruning",
+        "lora", "fine-tuning", "serving", "batch", "gpu", "cuda", "pytorch",
+        "training", "neural", "deep", "learning", "nlp", "generation",
+        "acceleration", "weight", "token", "embedding", "vllm", "llama",
+    }
+
+    # 对所有候选仓库进行匹配验证
+    results: list[dict] = []
+    acronyms_lower = [a.lower() for a in acronyms]
+
+    for item, qtype in candidates:
+        desc = (item.get("description") or "").lower()
+        name = (item.get("name") or "").lower()
+        full_name = (item.get("full_name") or "").lower()
+        topics = [t.lower() for t in (item.get("topics") or [])]
+        searchable = desc + " " + name + " " + full_name + " " + " ".join(topics)
+        is_match = False
+
+        # 信号1：仓库描述/名称中包含 arxiv_id（最可靠）
+        if base_id and base_id in searchable:
+            is_match = True
+        # 信号2：仓库名精确匹配缩写 + 仓库与 ML 领域相关
+        if not is_match and any(acr == name for acr in acronyms_lower):
+            if any(ind in searchable for ind in ml_indicators):
+                is_match = True
+        # 信号3：标题关键词 ≥ 3 个匹配（更严格）
+        if not is_match:
+            title_words = [w.lower() for w in title.split() if len(w) > 3]
+            match_count = sum(1 for w in title_words if w in searchable)
+            if match_count >= 3:
+                is_match = True
+
+        if is_match:
             results.append({
                 "url": item["html_url"],
                 "source": "GitHub Search",
@@ -393,18 +505,27 @@ def find_interested_papers(vault_path: str, folder: str = "papers") -> list[dict
 
 
 def append_deep_note(filepath: str, deep_content: str):
-    """将深度分析内容追加到已有笔记"""
+    """将深度分析内容追加到已有笔记（已有则替换，防止重复）"""
     with open(filepath, "r", encoding="utf-8") as f:
         content = f.read()
 
-    marker = "## 阅读笔记"
-    if marker in content:
-        content = content.replace(
-            f"---\n\n{marker}",
-            f"{deep_content}\n\n---\n\n{marker}",
-        )
+    deep_marker = "## 🔬 二阶段深度分析"
+    if deep_marker in content:
+        # 已有深度分析：替换旧内容
+        idx = content.index(deep_marker)
+        # 找到下一个同级 ## 标题作为结束边界
+        next_h2 = re.search(r"\n## (?!🔬)", content[idx + 1:])
+        end_idx = (idx + 1 + next_h2.start()) if next_h2 else len(content)
+        content = content[:idx] + deep_content.strip() + "\n\n" + content[end_idx:]
     else:
-        content += deep_content
+        marker = "## 阅读笔记"
+        if marker in content:
+            content = content.replace(
+                f"---\n\n{marker}",
+                f"{deep_content}\n\n---\n\n{marker}",
+            )
+        else:
+            content += deep_content
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
@@ -421,6 +542,7 @@ def post_process_deep_analysis(filepath: str):
 
     with open(filepath, "r", encoding="utf-8") as f:
         content = f.read()
+    original_content = content
 
     if not content.startswith("---"):
         return
@@ -455,9 +577,10 @@ def post_process_deep_analysis(filepath: str):
 
     # --- 3. 重构页面：深度分析提前，AI 摘要折叠 ---
     if "[!abstract]- 📋 AI 自动摘要" in content or "## 🔬 二阶段深度分析" not in content:
-        # 已重构过或无深度分析段落，跳过
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
+        # 已重构过或无深度分析段落，仅在有变更时写入
+        if content != original_content:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
         return
 
     body_start = end + 3
@@ -465,8 +588,9 @@ def post_process_deep_analysis(filepath: str):
 
     first_h2 = body.find("\n## ")
     if first_h2 == -1:
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
+        if content != original_content:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
         return
 
     header_part = body[:first_h2]
@@ -494,15 +618,17 @@ def post_process_deep_analysis(filepath: str):
         elif title in KEEP_SECTIONS:
             keep_sections.append(text)
         else:
-            ai_sections.append(text)
+            # 未知段落保留原位，不折叠进 AI 摘要
+            keep_sections.append(text)
 
     if not deep_section:
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
+        if content != original_content:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
         return
 
-    new_body = header_part + "\n"
-    new_body += "\n" + deep_section
+    new_body = header_part.rstrip("\n") + "\n\n"
+    new_body += deep_section.rstrip("\n") + "\n"
     if ai_sections:
         new_body += "\n---\n\n"
         callout_lines = ["> [!abstract]- 📋 AI 自动摘要（点击展开）", ">"]
@@ -512,7 +638,11 @@ def post_process_deep_analysis(filepath: str):
         new_body += "\n".join(callout_lines) + "\n"
     new_body += "\n---\n"
     for sec in keep_sections:
-        new_body += "\n" + sec
+        new_body += "\n" + sec.strip("\n") + "\n"
+
+    # 清理可能产生的双重分隔线
+    while "\n---\n\n---\n" in new_body:
+        new_body = new_body.replace("\n---\n\n---\n", "\n---\n")
 
     content = content[:body_start] + new_body
 
