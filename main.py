@@ -356,6 +356,12 @@ def cmd_scan(config: dict, no_ai: bool = False, dry_run: bool = False, no_check:
                     time.sleep(8)
             print(f"\n  🔧 修复完成: {fixed}/{len(regen)} 篇")
 
+    # --- 步骤 5: 同步深度分析状态 ---
+    folder = output_cfg.get("folder", "papers")
+    sync_count = _sync_deep_analysis_status(vault_path, folder)
+    if sync_count:
+        print(f"\n🔬 同步了 {sync_count} 篇论文的深度分析状态")
+
 
 # =============================================================================
 # deep 模式：深度分析收藏论文
@@ -711,7 +717,7 @@ def _list_all_papers(vault_path: str, folder: str) -> list[dict]:
             except Exception:
                 continue
 
-    papers.sort(key=lambda x: x.get("status_updated") or x.get("created") or "", reverse=True)
+    papers.sort(key=lambda x: str(x.get("status_updated") or x.get("created") or ""), reverse=True)
     return papers
 
 
@@ -1073,7 +1079,8 @@ def _sync_deep_analysis_status(vault_path: str, folder: str) -> int:
                     continue
                 has_section = "## 🔬 二阶段深度分析" in content
                 marked = fm.get("deep_analysis") is True
-                if has_section and not marked:
+                restructured = "[!abstract]- 📋 AI 自动摘要" in content
+                if has_section and (not marked or not restructured):
                     post_process_deep_analysis(fp)
                     count += 1
             except Exception:
@@ -1174,6 +1181,8 @@ def cmd_dashboard(config: dict):
         "const parts = ['unread','interested','reading','done','rejected'].map(s =>",
         "  `[[_${s}|${navLabels[s]} (${counts[s] || 0})]]`",
         ");",
+        "const codeCount = pages.filter(p => p.code && p.code.length > 0).length;",
+        "parts.push(`[[_code_repos|📦 代码仓库 (${codeCount}/${total})]]]`);",
         "dv.paragraph('**快速导航:** ' + parts.join(' · '));",
         "```",
         "",
@@ -1538,6 +1547,41 @@ def cmd_dashboard(config: dict):
         "    new Notice('❌ 启动失败: ' + e.message, 8000);",
         "  });",
         "};",
+        "",
+        "// --- 搜索代码仓按钮（spawn 实时输出）---",
+        "const srBtn = btnRow.createEl('button', {text: '📦 搜索代码仓'});",
+        "srBtn.style.padding = '6px 16px';",
+        "srBtn.style.cursor = 'pointer';",
+        "srBtn.onclick = () => {",
+        "  srBtn.disabled = true;",
+        "  srBtn.textContent = '📦 搜索中 ⏳';",
+        "  logBox.textContent = '';",
+        "  logWrap.style.display = 'block';",
+        "  appendLog('⏳ 开始批量搜索代码仓库...\\n\\n');",
+        "  const srProc = cp.spawn(py, ['-m', 'paper_reader_v2.main', 'search-repos'], {",
+        "    cwd: cwd,",
+        "    env: {...process.env, PYTHONIOENCODING: 'utf-8'},",
+        "  });",
+        "  srProc.stdout.on('data', (d) => appendLog(d.toString()));",
+        "  srProc.stderr.on('data', (d) => { const s = d.toString(); if (!/LiteLLM:|litellm/.test(s)) appendLog('[stderr] ' + s); });",
+        "  srProc.on('close', (code) => {",
+        "    srBtn.disabled = false;",
+        "    srBtn.textContent = '📦 搜索代码仓';",
+        "    if (code === 0) {",
+        "      appendLog('\\n✅ 搜索完成');",
+        "      new Notice('📦 代码仓搜索完成！查看日志了解详情', 8000);",
+        "    } else {",
+        "      appendLog('\\n❌ 搜索异常退出 (code ' + code + ')');",
+        "      new Notice('❌ 搜索失败，查看日志了解原因', 8000);",
+        "    }",
+        "  });",
+        "  srProc.on('error', (e) => {",
+        "    srBtn.disabled = false;",
+        "    srBtn.textContent = '📦 搜索代码仓';",
+        "    appendLog('\\n❌ 启动失败: ' + e.message);",
+        "    new Notice('❌ 启动失败: ' + e.message, 8000);",
+        "  });",
+        "};",
         "```",
         "",
     ])
@@ -1629,6 +1673,18 @@ def cmd_dashboard(config: dict):
             "      row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 0;';",
             "      const link = row.createEl('a', {cls: 'internal-link', href: p.file.path});",
             "      link.textContent = `${p.icon || '📄'} ${p.file.name}`;",
+        ]
+        # 对感兴趣/阅读中的页面添加深度分析标识
+        if status_key in ("interested", "reading"):
+            page_lines += [
+                "      const deep = p.deep_analysis === true;",
+                "      if (deep) {",
+                "        const badge = row.createEl('span', {text: '🔬'});",
+                "        badge.title = '已深度分析';",
+                "        badge.style.cssText = 'font-size:12px;flex-shrink:0;';",
+                "      }",
+            ]
+        page_lines += [
             "      const btnG = row.createEl('span');",
             "      btnG.style.cssText = 'margin-left:auto;display:flex;gap:4px;flex-shrink:0';",
             "      for (const [icon, target, label] of actions) {",
@@ -1651,10 +1707,202 @@ def cmd_dashboard(config: dict):
             f.write("\n".join(page_lines))
         generated_status_pages.append(status_key)
 
+    # 生成代码仓库汇总页
+    _generate_code_repos_page(vault_path, folder, python_exe, cwd_dir)
+
     print(f"仪表板已生成: {dashboard_path}")
     print(f"  总计 {total} 篇 | 收藏 {read_count} | 待审 {unread_count} | 深度 {deep_count}")
-    print(f"  状态索引页: {', '.join(f'_{s}.md' for s in generated_status_pages)}")
+    print(f"  状态索引页: {', '.join(f'_{s}.md' for s in generated_status_pages)}, _code_repos.md")
     log_activity("dashboard", {"total": total, "read": read_count, "unread": unread_count})
+
+
+def _generate_code_repos_page(vault_path: str, folder: str, python_exe: str, cwd_dir: str):
+    """生成代码仓库汇总页 _code_repos.md"""
+    page_lines = [
+        "---",
+        "title: 代码仓库汇总",
+        "tags: [索引, 动态]",
+        "---",
+        "",
+        "# 📦 代码仓库汇总",
+        "",
+        "> 展示所有论文的代码仓库情况 · 内容由 Dataview 实时查询",
+        "",
+        "← [[_dashboard|返回仪表板]]",
+        "",
+        "```dataviewjs",
+        f"const pages = dv.pages('\"" + folder + "\"').where(p => p.arxiv_id);",
+        "const total = pages.length;",
+        "const withCode = pages.filter(p => p.code && p.code.length > 0);",
+        "const withoutCode = pages.filter(p => !p.code || p.code.length === 0);",
+        "const deepDone = pages.filter(p => p.deep_analysis === true);",
+        "",
+        "// 概览统计",
+        "const pct = total ? Math.round(100 * withCode.length / total) : 0;",
+        "dv.paragraph(`> [!info] 📊 总计 **${total}** 篇 · 📦 有代码 **${withCode.length}** (${pct}%) · ❌ 无代码 **${withoutCode.length}** · 🔬 已深度分析 **${deepDone.length}**`);",
+        "",
+        "// 进度条",
+        "const bar = dv.container.createEl('div');",
+        "bar.style.cssText = 'display:flex;height:24px;border-radius:6px;overflow:hidden;margin:8px 0 16px';",
+        "if (withCode.length > 0) {",
+        "  const seg1 = bar.createEl('div');",
+        "  seg1.style.cssText = `flex:${withCode.length};background:#2ecc71;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;min-width:30px`;",
+        "  seg1.textContent = `有代码 ${withCode.length}`;",
+        "}",
+        "if (withoutCode.length > 0) {",
+        "  const seg2 = bar.createEl('div');",
+        "  seg2.style.cssText = `flex:${withoutCode.length};background:#95a5a6;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;min-width:30px`;",
+        "  seg2.textContent = `无代码 ${withoutCode.length}`;",
+        "}",
+        "",
+        "// 有代码的论文（按分类分组）",
+        "dv.header(2, `📦 有代码仓库 (${withCode.length} 篇)`);",
+        "if (withCode.length === 0) { dv.paragraph('*暂无*'); }",
+        "else {",
+        "  const groups = withCode.groupBy(p => p.category || '未分类');",
+        "  for (const group of groups.sort(g => g.key, 'asc')) {",
+        "    dv.header(3, `${group.key} (${group.rows.length})`);",
+        "    const rows = [];",
+        "    for (const p of group.rows) {",
+        "      const deepBadge = p.deep_analysis === true ? ' 🔬' : '';",
+        "      const stars = p.stars ? ` ⭐${p.stars}` : '';",
+        "      const codeLink = p.code ? `[${p.code.replace('https://github.com/','')}](${p.code})` : '';",
+        "      rows.push([`${p.icon || '📄'} [[${p.file.name}]]${deepBadge}`, codeLink + stars]);",
+        "    }",
+        "    dv.table(['论文', '代码仓库'], rows);",
+        "  }",
+        "}",
+        "",
+        "// 收藏但无代码（重点关注）",
+        "dv.header(2, '⚠️ 收藏但无代码');",
+        "const needCode = withoutCode.filter(p => p.status === 'interested' || p.status === 'reading');",
+        "if (needCode.length === 0) { dv.paragraph('*所有收藏论文都已找到代码仓库* ✅'); }",
+        "else {",
+        "  dv.paragraph(`> [!warning] ${needCode.length} 篇收藏论文尚未找到代码仓库，可点击操作面板的「📦 搜索代码仓」按钮批量搜索`);",
+        "  dv.table(['论文', '分类', '状态'],",
+        "    needCode.map(p => [`${p.icon || '📄'} [[${p.file.name}]]`, p.category || '', p.status])",
+        "  );",
+        "}",
+        "```",
+        "",
+    ]
+
+    page_path = os.path.join(vault_path, folder, "_code_repos.md")
+    with open(page_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(page_lines))
+
+
+# =============================================================================
+# search-repos 模式：批量搜索代码仓库
+# =============================================================================
+
+def cmd_search_repos(config: dict):
+    """批量搜索收藏论文的代码仓库"""
+    from .deep_reader import search_code_repo
+
+    output_cfg = config.get("output", {})
+    vault_path = config.get("obsidian_vault", "")
+    if not vault_path:
+        print("❌ 错误：请在 config.yaml 中配置 obsidian_vault 路径")
+        sys.exit(1)
+
+    folder = output_cfg.get("folder", "papers")
+    papers_dir = os.path.join(vault_path, folder)
+
+    print("=" * 60)
+    print("📦 论文自动阅读系统 v2 — 批量搜索代码仓库")
+    print("=" * 60)
+
+    # 扫描所有收藏论文（interested/reading/done），找到无代码的
+    candidates = []
+    for root, _dirs, files in os.walk(papers_dir):
+        for fname in files:
+            if not fname.endswith(".md") or fname.startswith("_"):
+                continue
+            filepath = os.path.join(root, fname)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if not content.startswith("---"):
+                    continue
+                end = content.find("---", 3)
+                if end == -1:
+                    continue
+                fm = yaml.safe_load(content[3:end])
+                if not fm or not fm.get("arxiv_id"):
+                    continue
+                status = fm.get("status", "unread")
+                if status not in ("interested", "reading", "done"):
+                    continue
+                code_url = fm.get("code", "")
+                if code_url:
+                    continue  # 已有代码仓库，跳过
+                candidates.append({
+                    "filepath": filepath,
+                    "title": fm.get("title", fname[:-3]),
+                    "arxiv_id": str(fm.get("arxiv_id", "")),
+                    "status": status,
+                    "abstract": _read_abstract(filepath),
+                })
+            except Exception:
+                continue
+
+    if not candidates:
+        print("\n✅ 所有收藏论文都已有代码仓库，无需搜索")
+        return
+
+    print(f"\n📋 待搜索: {len(candidates)} 篇收藏论文无代码仓库\n")
+
+    found_count = 0
+    for i, paper in enumerate(candidates, 1):
+        print(f"[{i}/{len(candidates)}] 🔎 {paper['title'][:60]}...")
+        repos = search_code_repo(
+            title=paper["title"],
+            arxiv_id=paper["arxiv_id"],
+            abstract=paper.get("abstract", ""),
+        )
+        if repos:
+            # 选择星数最高的仓库
+            best = max(repos, key=lambda r: r.get("stars", 0))
+            repo_url = best["url"]
+            print(f"  ✅ 找到 {len(repos)} 个仓库 → 选择: {repo_url} ({best['source']}, ★{best.get('stars', '?')})")
+
+            # 写入 frontmatter 的 code 字段
+            try:
+                with open(paper["filepath"], "r", encoding="utf-8") as f:
+                    content = f.read()
+                end = content.find("---", 3)
+                fm_text = content[3:end]
+                body = content[end:]
+                # 替换 code 字段
+                if re.search(r'^code:\s*["\']?\s*["\']?\s*$', fm_text, re.MULTILINE):
+                    fm_text = re.sub(
+                        r'^code:\s*["\']?\s*["\']?\s*$',
+                        f'code: "{repo_url}"',
+                        fm_text,
+                        count=1,
+                        flags=re.MULTILINE,
+                    )
+                else:
+                    # 没有 code 字段，在 category 行后添加
+                    fm_text = re.sub(
+                        r'^(category:.*\n)',
+                        f'\\1code: "{repo_url}"\n',
+                        fm_text,
+                        count=1,
+                        flags=re.MULTILINE,
+                    )
+                with open(paper["filepath"], "w", encoding="utf-8") as f:
+                    f.write("---" + fm_text + body)
+                found_count += 1
+            except Exception as e:
+                print(f"  ⚠️ 写入失败: {e}")
+        else:
+            print(f"  ❌ 未找到代码仓库")
+
+    print(f"\n{'=' * 60}")
+    print(f"📦 搜索完成！找到 {found_count}/{len(candidates)} 篇论文的代码仓库")
+    log_activity("search_repos", {"searched": len(candidates), "found": found_count})
 
 
 # =============================================================================
@@ -1896,6 +2144,7 @@ def main():
   %(prog)s fix --limit 5     只修复前 5 篇
   %(prog)s stats             查看阅读统计
   %(prog)s dashboard         生成 Obsidian 统计仪表板
+  %(prog)s search-repos      批量搜索收藏论文的代码仓库
 
 AI 后端配置 (config.yaml 中的 ai.provider):
   codex    使用本地 Codex CLI（ChatGPT 订阅，默认 gpt-5.4）
@@ -1944,6 +2193,10 @@ AI 后端配置 (config.yaml 中的 ai.provider):
 
     subparsers.add_parser("update-keywords", help="更新正反关键词画像")
 
+    subparsers.add_parser("search-repos", help="批量搜索收藏论文的代码仓库")
+
+    subparsers.add_parser("sync-deep", help="同步深度分析状态（frontmatter + 重构页面）")
+
     args = parser.parse_args()
     config = load_config(args.config)
 
@@ -1982,6 +2235,14 @@ AI 后端配置 (config.yaml 中的 ai.provider):
         cmd_dashboard(config)
     elif command == "update-keywords":
         cmd_update_keywords(config)
+    elif command == "search-repos":
+        cmd_search_repos(config)
+    elif command == "sync-deep":
+        output_cfg = config.get("output", {})
+        vault_path = config.get("obsidian_vault", "")
+        folder = output_cfg.get("folder", "papers")
+        count = _sync_deep_analysis_status(vault_path, folder)
+        print(f"🔬 深度分析同步完成：{count} 篇论文已更新")
 
 
 if __name__ == "__main__":

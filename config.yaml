@@ -53,8 +53,8 @@ arxiv:
     - "kv-cache"
     - "block"
     - "mermaid flowchart"
-    - "decoding speculative"
-    - "gqa mla"
+    - "tensor core"
+    - "prefill decode"
   categories:
     - "cs.CL"
     - "cs.LG"
